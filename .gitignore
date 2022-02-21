@@ -1,5 +1,6 @@
 /.DS_Store
+/sandbox/.DS_Store
+/assets/.DS_Store
 /.vscode
 /build
 /deps/glfw
-/deps/linmath

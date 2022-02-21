@@ -27,19 +27,29 @@
 extern "C" {
 #endif
 
-#include "GLFW/glfw3.h"
+#include <stdint.h>
 #include <stdlib.h>
-#include <strings.h>
+#include <stddef.h>
+#include <stdio.h>
 
-#ifndef __APPLE__ || __MACOSX
-#include <OpenGL/OpenGL.h>
+#ifdef LIBBL_USE_APPLE_OPENGL && __APPLE__
+#include <OpenGL/gl.h>
+#else
+#include "../ext/glad/glad.h"
 #endif
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb/stb_image.h"
-#include "linmath/linmath.h"
+#if __APPLE__
+#include <strings.h>
+#else
+#include <string.h>
+#endif
 
-// Declarations and basic types
+#ifdef LIBBL_STB_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
+#include "../ext/stb/stb_image.h"
+#endif
+
+#include "../ext/math/linmath.h"
 
 #define PI 3.14159265
 #define DEG PI / 180.0f
@@ -48,6 +58,9 @@ typedef unsigned char         u8_t;
 typedef unsigned short        u16_t;
 typedef unsigned int          u32_t;
 typedef unsigned long long    u64_t;
+typedef short                 i16_t;
+typedef int                   i32_t;
+typedef long long             i64_t;
 typedef signed char           s8_t;
 typedef signed short          s16_t;
 typedef signed int            s32_t;
@@ -56,17 +69,32 @@ typedef float                 f32_t;
 typedef double                f64_t;
 typedef char                  c_t;
 typedef char                  b_t;
-typedef const char            c_c_t;
+typedef const char            cc_t;
 typedef size_t                sz_t;
 typedef intptr_t              iptr_t;
 typedef uintptr_t             uptr_t;
 
+typedef struct {
+vec3                          position;
+vec3                          color;
+vec2                          uv;
+} bl_vertex_t;
+
+typedef struct {
+u32_t                         vertices[3];
+} bl_vertex_index_t;
+
 typedef struct
 {
 u32_t                         draw_call_count;
-} renderer_context_t;
+u32_t                         vertex_count;
+u32_t                         index_count;
+u32_t                         texture_count;
+u32_t                         shader_count;
+u32_t                         entity_count;
+} bl_stats_t;
 
-static renderer_context_t     global_renderer_context;
+static bl_stats_t             bl_global_stats = {0};
 
 // @transform
 typedef struct
@@ -79,15 +107,17 @@ typedef struct
 // @entity
 typedef struct
 {
-  c_c_t                       *name;
+  cc_t                       *name;
   u16_t                       index;
-  vec2                        position;
+  vec3                        position;
+  vec3                        scale;
+  f32_t                       rotation; 
 } bl_ent_t;
 
 #define GLOBAL_M_SIZE         512
 bl_ent_t* global_manager      [GLOBAL_M_SIZE];
 
-bl_ent_t* bl_get_entity(c_c_t* name, bl_ent_t* _manager[GLOBAL_M_SIZE])
+bl_ent_t* bl_get_entity(cc_t* name, bl_ent_t* _manager[])
 {
   for (u32_t i = 0; i <= GLOBAL_M_SIZE; i++) {
     if (_manager[i] == NULL)  { continue; }
@@ -103,25 +133,10 @@ void bl_register_entity(bl_ent_t* ent, bl_ent_t* _manager[GLOBAL_M_SIZE])
   _manager[*&ent->index] =    ent;
 }
 
-f32_t global_vertices[32] = 
-{
-   // @Vertex Position      // @Color (RGB)       // @UV Coord
-   0.5f,  0.5f, 0.0f,      1.0f, 1.0f, 0.0f,      0.0f, 0.0f,
-   0.5f, -0.5f, 0.0f,      1.0f, 0.0f, 0.0f,      0.0f, 1.0f,
-  -0.5f, -0.5f, 0.0f,      1.0f, 0.0f, 1.0f,      1.0f, 1.0f,
-  -0.5f,  0.5f, 0.0f,      0.0f, 0.0f, 1.0f,      1.0f, 0.0f,
-};
-
-u32_t global_indices[6] = 
-{
-  0, 1, 3, // @first triangle
-  1, 3, 2, // @second triangle
-};
-
 //
 // @Utility functions
 //
-c_c_t* read_file_content(c_c_t* path)
+cc_t* read_file_content(cc_t* path)
 {
   FILE                       *infile;
   c_t                        *buffer;
@@ -147,26 +162,30 @@ c_c_t* read_file_content(c_c_t* path)
 /**
  * @GL_TEXTURE
  * 
- * @param {const char* path}
- * @param {unsigned int*}
+ * @param {cc_t*} path
+ * @param {u32_t*} texture_id
  * 
  * @brief Load file from disk, Store in the memory and generate GL_TEXTURE buffer
  */
-void load_and_create_texture(c_c_t* path, u32_t* texture)
+void load_and_create_texture(cc_t* path, u32_t* texture_id, u32_t __SLOT)
 {
+
+  #if                         defined(STB_IMAGE_IMPLEMENTATION)
   
+  if (__SLOT == NULL)         { __SLOT = 0; }
+
   stbi_set_flip_vertically_on_load(1);
 
-  s32_t                         width;
-  s32_t                         height;
-  s32_t                         channels;
-  u8_t                          *buffer;
+  s32_t                        width;
+  s32_t                        height;
+  s32_t                        channels;
+  u8_t                         *buffer;
 
   buffer = stbi_load          (path, &width, &height, &channels, 0);
 
-  glGenTextures               (1, texture);
-  glActiveTexture             (GL_TEXTURE0);
-  glBindTexture               (GL_TEXTURE_2D, texture);
+  glGenTextures               (1, texture_id);
+  glActiveTexture             (GL_TEXTURE0 + __SLOT);
+  glBindTexture               (GL_TEXTURE_2D, texture_id);
 
   u32_t                       texDataFormat;
   if (channels == 4)          { texDataFormat = GL_RGBA; }
@@ -180,6 +199,10 @@ void load_and_create_texture(c_c_t* path, u32_t* texture)
   glTexImage2D                (GL_TEXTURE_2D, 0, texDataFormat, width, height, 0, texDataFormat, GL_UNSIGNED_BYTE, buffer);
   glGenerateMipmap            (GL_TEXTURE_2D);
   stbi_image_free             (buffer);
+  
+  #else
+  #error                      "STB_IMAGE_IMPLEMENTATION not defined"
+  #endif  
 }
 
 //
@@ -192,7 +215,7 @@ u32_t                         m_renderer_id;
 
 void gen_and_bind_vertex_array(vertex_array_t* vao)
 {
-#if __APPLE__ || __MACOSX
+#if defined(LIBBL_USE_APPLE_OPENGL) && defined(__APPLE__)
   glGenVertexArraysAPPLE      (1, &vao->m_renderer_id);
   glBindVertexArrayAPPLE      (vao->m_renderer_id);
 #else
@@ -203,7 +226,7 @@ void gen_and_bind_vertex_array(vertex_array_t* vao)
 
 void unbind_vertex_array(vertex_array_t* vao) 
 {
-#ifdef __APPLE__ || __MACOSX
+#if defined(LIBBL_USE_APPLE_OPENGL) && defined(__APPLE__)
   glBindVertexArrayAPPLE      (0);
 #else
   glBindVertexArray           (0);
@@ -212,7 +235,7 @@ void unbind_vertex_array(vertex_array_t* vao)
 
 void free_vertex_array(vertex_array_t* vao)
 {
-#ifdef __APPLE__ || __MACOSX
+#if defined(LIBBL_USE_APPLE_OPENGL) && defined(__APPLE__)
   glDeleteVertexArraysAPPLE   (1, &vao->m_renderer_id);
 #else
   glDeleteVertexArrays        (1, &vao->m_renderer_id);
@@ -237,7 +260,7 @@ void bind_vertex_buffer(vertex_buffer_t* vbo)
   glBindBuffer                (GL_ARRAY_BUFFER, vbo->m_renderer_id);
 }
 
-void vertex_buffer_data(intptr_t size, f32_t* data)
+void vertex_buffer_data(iptr_t size, f32_t* data)
 {
   glBufferData                (GL_ARRAY_BUFFER, size, *&data, GL_STATIC_DRAW);
 }
@@ -270,7 +293,7 @@ void bind_indice_buffer(indice_buffer_t* ebo)
   glBindBuffer                (GL_ELEMENT_ARRAY_BUFFER, ebo->m_renderer_id);
 }
 
-void indice_buffer_data(intptr_t size, u32_t* data)
+void indice_buffer_data(iptr_t size, u32_t* data)
 {
   glBufferData                (GL_ELEMENT_ARRAY_BUFFER, size, *&data, GL_STATIC_DRAW);
 }
@@ -286,12 +309,17 @@ void free_indice_buffer(vertex_buffer_t* ebo)
 
 typedef struct
 {
-unsigned int                  m_program_id;
+i32_t                  m_program_id;
 } shader_program_t;
 
-unsigned int compile_shader(c_c_t* content, u32_t type)
+u32_t compile_shader(cc_t* content, u32_t type)
 {
   u32_t shader =              glCreateShader(type);
+  if( 0 == shader )          
+  {
+    fprintf                   (stderr, "Error creating vertex shader.\n");
+    exit                      (EXIT_FAILURE);
+  }
   glShaderSource              (shader, 1, &content, NULL);
   glCompileShader             (shader);
   return                      shader;
@@ -318,8 +346,7 @@ void detach_program(shader_program_t* p)
 void draw_triangles(s32_t count)
 {
   glDrawElements              (GL_TRIANGLES, count, GL_UNSIGNED_INT, 0);
-
-  global_renderer_context.draw_call_count++;
+  bl_global_stats.draw_call_count++;
 }
 
 #ifdef                        __cplusplus
